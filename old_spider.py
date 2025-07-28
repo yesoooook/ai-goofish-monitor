@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 
 import requests
 from dotenv import load_dotenv
+from openai import AsyncOpenAI, APIStatusError
 from playwright.async_api import async_playwright, Response, TimeoutError as PlaywrightTimeoutError
 from requests.exceptions import HTTPError
 
@@ -24,12 +25,25 @@ API_URL_PATTERN = "h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search"
 # 定义闲鱼详情页API的URL特征
 DETAIL_API_URL_PATTERN = "h5api.m.goofish.com/h5/mtop.taobao.idle.pc.detail"
 
-# --- Configuration ---
+# --- AI & Notification Configuration ---
 load_dotenv()
+API_KEY = os.getenv("OPENAI_API_KEY")
+BASE_URL = os.getenv("OPENAI_BASE_URL")
+MODEL_NAME = os.getenv("OPENAI_MODEL_NAME")
 NTFY_TOPIC_URL = os.getenv("NTFY_TOPIC_URL")
 WX_BOT_URL = os.getenv("WX_BOT_URL")
 PCURL_TO_MOBILE = os.getenv("PCURL_TO_MOBILE")
 RUN_HEADLESS = os.getenv("RUN_HEADLESS", "true").lower() != "false"
+
+# 检查配置是否齐全
+if not all([BASE_URL, MODEL_NAME]):
+    sys.exit("错误：请确保在 .env 文件中完整设置了 OPENAI_BASE_URL 和 OPENAI_MODEL_NAME。(OPENAI_API_KEY 对于某些服务是可选的)")
+
+# 初始化 OpenAI 客户端
+try:
+    client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL)
+except Exception as e:
+    sys.exit(f"初始化 OpenAI 客户端时出错: {e}")
 
 # 定义目录和文件名
 IMAGE_SAVE_DIR = "images"
@@ -376,6 +390,8 @@ def format_registration_days(total_days: int) -> str:
         return "来闲鱼不足一个月"
 
 
+# --- AI分析及通知辅助函数 (从 ai_filter.py 移植并异步化改造) ---
+
 def retry_on_failure(retries=3, delay=5):
     """
     一个通用的异步重试装饰器，增加了对HTTP错误的详细日志记录。
@@ -386,7 +402,7 @@ def retry_on_failure(retries=3, delay=5):
             for i in range(retries):
                 try:
                     return await func(*args, **kwargs)
-                except HTTPError as e:
+                except (APIStatusError, HTTPError) as e:
                     print(f"函数 {func.__name__} 第 {i + 1}/{retries} 次尝试失败，发生HTTP错误。")
                     if hasattr(e, 'status_code'):
                         print(f"  - 状态码 (Status Code): {e.status_code}")
@@ -409,6 +425,71 @@ def retry_on_failure(retries=3, delay=5):
     return decorator
 
 
+@retry_on_failure(retries=2, delay=3)
+async def _download_single_image(url, save_path):
+    """一个带重试的内部函数，用于异步下载单个图片。"""
+    loop = asyncio.get_running_loop()
+    # 使用 run_in_executor 运行同步的 requests 代码，避免阻塞事件循环
+    response = await loop.run_in_executor(
+        None,
+        lambda: requests.get(url, headers=IMAGE_DOWNLOAD_HEADERS, timeout=20, stream=True)
+    )
+    response.raise_for_status()
+    with open(save_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
+    return save_path
+
+
+async def download_all_images(product_id, image_urls):
+    """异步下载一个商品的所有图片。如果图片已存在则跳过。"""
+    if not image_urls:
+        return []
+
+    urls = [url.strip() for url in image_urls if url.strip().startswith('http')]
+    if not urls:
+        return []
+
+    saved_paths = []
+    total_images = len(urls)
+    for i, url in enumerate(urls):
+        try:
+            clean_url = url.split('.heic')[0] if '.heic' in url else url
+            file_name_base = os.path.basename(clean_url).split('?')[0]
+            file_name = f"product_{product_id}_{i + 1}_{file_name_base}"
+            file_name = re.sub(r'[\\/*?:"<>|]', "", file_name)
+            if not os.path.splitext(file_name)[1]:
+                file_name += ".jpg"
+
+            save_path = os.path.join(IMAGE_SAVE_DIR, file_name)
+
+            if os.path.exists(save_path):
+                print(f"   [图片] 图片 {i + 1}/{total_images} 已存在，跳过下载: {os.path.basename(save_path)}")
+                saved_paths.append(save_path)
+                continue
+
+            print(f"   [图片] 正在下载图片 {i + 1}/{total_images}: {url}")
+            if await _download_single_image(url, save_path):
+                print(f"   [图片] 图片 {i + 1}/{total_images} 已成功下载到: {os.path.basename(save_path)}")
+                saved_paths.append(save_path)
+        except Exception as e:
+            print(f"   [图片] 处理图片 {url} 时发生错误，已跳过此图: {e}")
+
+    return saved_paths
+
+
+def encode_image_to_base64(image_path):
+    """将本地图片文件编码为 Base64 字符串。"""
+    if not image_path or not os.path.exists(image_path):
+        return None
+    try:
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
+    except Exception as e:
+        print(f"编码图片时出错: {e}")
+        return None
+
+
 @retry_on_failure(retries=3, delay=5)
 async def send_ntfy_notification(product_data, reason):
     """当发现推荐商品时，异步发送一个高优先级的 ntfy.sh 通知。"""
@@ -427,7 +508,7 @@ async def send_ntfy_notification(product_data, reason):
     else:
         message = f"价格: {price}\n原因: {reason}\n链接: {link}"
 
-    notification_title = f"🚨 新发现! {title[:30]}..."
+    notification_title = f"🚨 新推荐! {title[:30]}..."
 
     try:
         print(f"   -> 正在发送 ntfy 通知到: {NTFY_TOPIC_URL}")
@@ -481,17 +562,67 @@ async def send_ntfy_notification(product_data, reason):
         print(f"   -> 发送企业微信通知时发生未知错误: {e}")
         raise
 
+@retry_on_failure(retries=5, delay=10)
+async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
+    """将完整的商品JSON数据和所有图片发送给 AI 进行分析（异步）。"""
+    item_info = product_data.get('商品信息', {})
+    product_id = item_info.get('商品ID', 'N/A')
+
+    print(f"\n   [AI分析] 开始分析商品 #{product_id} (含 {len(image_paths or [])} 张图片)...")
+    print(f"   [AI分析] 标题: {item_info.get('商品标题', '无')}")
+
+    if not prompt_text:
+        print("   [AI分析] 错误：未提供AI分析所需的prompt文本。")
+        return None
+
+    product_details_json = json.dumps(product_data, ensure_ascii=False, indent=2)
+    system_prompt = prompt_text
+
+    combined_text_prompt = f"""{system_prompt}
+
+请基于你的专业知识和我的要求，分析以下完整的商品JSON数据：
+
+```json
+    {product_details_json}
+"""
+    user_content_list = [{"type": "text", "text": combined_text_prompt}]
+
+    if image_paths:
+        for path in image_paths:
+            base64_image = encode_image_to_base64(path)
+            if base64_image:
+                user_content_list.append(
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}})
+
+    messages = [{"role": "user", "content": user_content_list}]
+
+    response = await client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        response_format={"type": "json_object"}
+    )
+
+    ai_response_content = response.choices[0].message.content
+
+    try:
+        return json.loads(ai_response_content)
+    except json.JSONDecodeError as e:
+        print("---!!! AI RESPONSE PARSING FAILED (JSONDecodeError) !!!---")
+        print(f"原始返回值 (Raw response from AI):\n---\n{ai_response_content}\n---")
+        raise e
+
 
 async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     """
     【核心执行器】
-    根据单个任务配置，异步爬取闲鱼商品数据。
+    根据单个任务配置，异步爬取闲鱼商品数据，并对每个新发现的商品进行实时的、独立的AI分析和通知。
     """
     keyword = task_config['keyword']
     max_pages = task_config.get('max_pages', 1)
     personal_only = task_config.get('personal_only', False)
     min_price = task_config.get('min_price')
     max_price = task_config.get('max_price')
+    ai_prompt_text = task_config.get('ai_prompt_text', '')
 
     processed_item_count = 0
     stop_scraping = False
@@ -709,11 +840,37 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                 "卖家信息": user_profile_data
                             }
 
-                            # 保存记录
-                            await save_to_jsonl(final_record, keyword)
+                            # --- START: Real-time AI Analysis & Notification ---
+                            print(f"   -> 开始对商品 #{item_data['商品ID']} 进行实时AI分析...")
+                            # 1. Download images
+                            image_urls = item_data.get('商品图片列表', [])
+                            downloaded_image_paths = await download_all_images(item_data['商品ID'], image_urls)
 
-                            # Send notification
-                            await send_ntfy_notification(item_data, "发现新商品")
+                            # 2. Get AI analysis
+                            ai_analysis_result = None
+                            if ai_prompt_text:
+                                try:
+                                    # 注意：这里我们将整个记录传给AI，让它拥有最全的上下文
+                                    ai_analysis_result = await get_ai_analysis(final_record, downloaded_image_paths, prompt_text=ai_prompt_text)
+                                    if ai_analysis_result:
+                                        final_record['ai_analysis'] = ai_analysis_result
+                                        print(f"   -> AI分析完成。推荐状态: {ai_analysis_result.get('is_recommended')}")
+                                    else:
+                                        final_record['ai_analysis'] = {'error': 'AI analysis returned None after retries.'}
+                                except Exception as e:
+                                    print(f"   -> AI分析过程中发生严重错误: {e}")
+                                    final_record['ai_analysis'] = {'error': str(e)}
+                            else:
+                                print("   -> 任务未配置AI prompt，跳过分析。")
+
+                            # 3. Send notification if recommended
+                            if ai_analysis_result and ai_analysis_result.get('is_recommended'):
+                                print(f"   -> 商品被AI推荐，准备发送通知...")
+                                await send_ntfy_notification(item_data, ai_analysis_result.get("reason", "无"))
+                            # --- END: Real-time AI Analysis & Notification ---
+
+                            # 4. 保存包含AI结果的完整记录
+                            await save_to_jsonl(final_record, keyword)
 
                             processed_links.add(unique_key)
                             processed_item_count += 1
@@ -752,7 +909,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="闲鱼商品监控脚本，支持多任务配置。",
+        description="闲鱼商品监控脚本，支持多任务配置和实时AI分析。",
         epilog="""
 使用示例:
   # 运行 config.json 中定义的所有任务
@@ -778,6 +935,29 @@ async def main():
             tasks_config = json.load(f)
     except (json.JSONDecodeError, IOError) as e:
         sys.exit(f"错误: 读取或解析配置文件 '{args.config}' 失败: {e}")
+
+    # 读取所有prompt文件内容
+    for task in tasks_config:
+        if task.get("enabled", False) and task.get("ai_prompt_base_file") and task.get("ai_prompt_criteria_file"):
+            try:
+                with open(task["ai_prompt_base_file"], 'r', encoding='utf-8') as f_base:
+                    base_prompt = f_base.read()
+                with open(task["ai_prompt_criteria_file"], 'r', encoding='utf-8') as f_criteria:
+                    criteria_text = f_criteria.read()
+
+                # 动态组合成最终的Prompt
+                task['ai_prompt_text'] = base_prompt.replace("{{CRITERIA_SECTION}}", criteria_text)
+
+            except FileNotFoundError as e:
+                print(f"警告: 任务 '{task['task_name']}' 的prompt文件缺失: {e}，该任务的AI分析将被跳过。")
+                task['ai_prompt_text'] = ""
+        elif task.get("enabled", False) and task.get("ai_prompt_file"):
+            try:
+                with open(task["ai_prompt_file"], 'r', encoding='utf-8') as f:
+                    task['ai_prompt_text'] = f.read()
+            except FileNotFoundError:
+                print(f"警告: 任务 '{task['task_name']}' 的prompt文件 '{task['ai_prompt_file']}' 未找到，该任务的AI分析将被跳过。")
+                task['ai_prompt_text'] = ""
 
     print("\n--- 开始执行监控任务 ---")
     if args.debug_limit > 0:

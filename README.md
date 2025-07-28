@@ -36,7 +36,25 @@ pip install -r requirements.txt
 
 ### 第 2 步: 基础配置
 
-1.  **获取登录状态 (重要!)**: 为了让爬虫能够以登录状态访问闲鱼，**必须先运行一次登录脚本**以生成会话状态文件。
+1.  **配置环境变量**: 在项目根目录创建一个 `.env` 文件，并填入以下配置信息。
+    ```env
+    # ntfy 通知服务配置
+    NTFY_TOPIC_URL="https://ntfy.sh/your-topic-name" # 替换为你的 ntfy 主题 URL
+
+    # 企业微信机器人通知配置
+    WX_BOT_URL="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxx"
+
+    # 是否使用edge 默认使用chrome
+    LOGIN_IS_EDGE=false
+
+    # 是否开启电脑链接转换为手机链接
+    PCURL_TO_MOBILE=true
+
+    # 爬虫是否以无头模式运行 (true/false)。遇到滑动验证码时，可设为 false
+    RUN_HEADLESS=true
+    ```
+
+2.  **获取登录状态 (重要!)**: 为了让爬虫能够以登录状态访问闲鱼，**必须先运行一次登录脚本**以生成会话状态文件。
     ```bash
     python login.py
     ```
@@ -96,7 +114,8 @@ graph TD
     D --> E{发现新商品?};
     E -- 是 --> F[抓取商品详情 & 卖家信息];
     F --> G[下载商品图片];
-    G --> K[保存记录到 JSONL];
+    G --> H[发送 ntfy 通知];
+    H --> K[保存记录到 JSONL];
     E -- 否 --> L[翻页/等待];
     L --> D;
     K --> E;
@@ -106,6 +125,7 @@ graph TD
 
 - **核心框架**: Playwright (异步) + asyncio
 - **Web服务**: FastAPI
+- **通知服务**: ntfy
 - **配置管理**: JSON
 - **依赖管理**: pip
 
@@ -113,6 +133,7 @@ graph TD
 
 ```
 .
+├── .env                # 环境变量，存放API密钥等敏感信息
 ├── .gitignore          # Git忽略配置
 ├── config.json         # 核心配置文件，用于定义所有监控任务
 ├── login.py            # 首次运行必须执行，用于获取并保存登录Cookie
