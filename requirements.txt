@@ -1,7 +1,5 @@
-python-dotenv
 playwright
 requests
-openai
 fastapi
 uvicorn[standard]
 jinja2

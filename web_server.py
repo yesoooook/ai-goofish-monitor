@@ -7,7 +7,6 @@ import asyncio
 import sys
 from dotenv import dotenv_values
 from fastapi import FastAPI, Request, HTTPException
-from prompt_generator import generate_criteria, update_config_with_new_task
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -23,8 +22,6 @@ class Task(BaseModel):
     personal_only: bool
     min_price: Optional[str] = None
     max_price: Optional[str] = None
-    ai_prompt_base_file: str
-    ai_prompt_criteria_file: str
 
 
 class TaskUpdate(BaseModel):
@@ -35,24 +32,9 @@ class TaskUpdate(BaseModel):
     personal_only: Optional[bool] = None
     min_price: Optional[str] = None
     max_price: Optional[str] = None
-    ai_prompt_base_file: Optional[str] = None
-    ai_prompt_criteria_file: Optional[str] = None
 
 
-class TaskGenerateRequest(BaseModel):
-    task_name: str
-    keyword: str
-    description: str
-    personal_only: bool = True
-    min_price: Optional[str] = None
-    max_price: Optional[str] = None
-
-
-class PromptUpdate(BaseModel):
-    content: str
-
-
-app = FastAPI(title="闲鱼智能监控机器人")
+app = FastAPI(title="闲鱼监控机器人")
 
 # --- Globals for process management ---
 scraper_process = None
@@ -93,67 +75,6 @@ async def get_tasks():
         raise HTTPException(status_code=500, detail=f"配置文件 {CONFIG_FILE} 格式错误。")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取任务配置时发生错误: {e}")
-
-
-@app.post("/api/tasks/generate", response_model=dict)
-async def generate_task(req: TaskGenerateRequest):
-    """
-    使用 AI 生成一个新的分析标准文件，并据此创建一个新任务。
-    """
-    print(f"收到 AI 任务生成请求: {req.task_name}")
-    
-    # 1. 为新标准文件生成一个唯一的文件名
-    safe_keyword = "".join(c for c in req.keyword.lower().replace(' ', '_') if c.isalnum() or c in "_-").rstrip()
-    output_filename = f"prompts/{safe_keyword}_criteria.txt"
-    
-    # 2. 调用 AI 生成分析标准
-    try:
-        generated_criteria = await generate_criteria(
-            user_description=req.description,
-            reference_file_path="prompts/macbook_criteria.txt" # 使用默认的macbook标准作为参考
-        )
-        if not generated_criteria:
-            raise HTTPException(status_code=500, detail="AI未能生成分析标准。")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"调用AI生成标准时出错: {e}")
-
-    # 3. 将生成的文本保存到新文件
-    try:
-        os.makedirs("prompts", exist_ok=True)
-        async with aiofiles.open(output_filename, 'w', encoding='utf-8') as f:
-            await f.write(generated_criteria)
-        print(f"新的分析标准已保存到: {output_filename}")
-    except IOError as e:
-        raise HTTPException(status_code=500, detail=f"保存分析标准文件失败: {e}")
-
-    # 4. 创建新任务对象
-    new_task = {
-        "task_name": req.task_name,
-        "enabled": True,
-        "keyword": req.keyword,
-        "max_pages": 3, # 默认值
-        "personal_only": req.personal_only,
-        "min_price": req.min_price,
-        "max_price": req.max_price,
-        "ai_prompt_base_file": "prompts/base_prompt.txt",
-        "ai_prompt_criteria_file": output_filename
-    }
-
-    # 5. 将新任务添加到 config.json
-    success = await update_config_with_new_task(new_task, CONFIG_FILE)
-    if not success:
-        # 如果更新失败，最好能把刚刚创建的文件删掉，以保持一致性
-        if os.path.exists(output_filename):
-            os.remove(output_filename)
-        raise HTTPException(status_code=500, detail="更新配置文件 config.json 失败。")
-
-    # 6. 返回成功创建的任务（包含ID）
-    async with aiofiles.open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        tasks = json.loads(await f.read())
-    new_task_with_id = new_task.copy()
-    new_task_with_id['id'] = len(tasks) - 1
-
-    return {"message": "AI 任务创建成功。", "task": new_task_with_id}
 
 
 @app.post("/api/tasks", response_model=dict)
@@ -327,9 +248,9 @@ async def list_result_files():
 
 
 @app.get("/api/results/{filename}")
-async def get_result_file_content(filename: str, page: int = 1, limit: int = 20, recommended_only: bool = False):
+async def get_result_file_content(filename: str, page: int = 1, limit: int = 20):
     """
-    读取指定的 .jsonl 文件内容，支持分页和筛选。
+    读取指定的 .jsonl 文件内容，支持分页。
     """
     if not filename.endswith(".jsonl") or "/" in filename or ".." in filename:
         raise HTTPException(status_code=400, detail="无效的文件名。")
@@ -343,11 +264,7 @@ async def get_result_file_content(filename: str, page: int = 1, limit: int = 20,
             async for line in f:
                 try:
                     record = json.loads(line)
-                    if recommended_only:
-                        if record.get("ai_analysis", {}).get("is_recommended") is True:
-                            results.append(record)
-                    else:
-                        results.append(record)
+                    results.append(record)
                 except json.JSONDecodeError:
                     continue
     except Exception as e:
@@ -394,62 +311,9 @@ async def get_system_status():
         },
         "env_file": {
             "exists": os.path.exists(".env"),
-            "openai_api_key_set": bool(env_config.get("OPENAI_API_KEY")),
-            "openai_base_url_set": bool(env_config.get("OPENAI_BASE_URL")),
-            "openai_model_name_set": bool(env_config.get("OPENAI_MODEL_NAME")),
-            "ntfy_topic_url_set": bool(env_config.get("NTFY_TOPIC_URL")),
         }
     }
     return status
-
-
-PROMPTS_DIR = "prompts"
-
-@app.get("/api/prompts")
-async def list_prompts():
-    """
-    列出 prompts/ 目录下的所有 .txt 文件。
-    """
-    if not os.path.isdir(PROMPTS_DIR):
-        return []
-    return [f for f in os.listdir(PROMPTS_DIR) if f.endswith(".txt")]
-
-
-@app.get("/api/prompts/{filename}")
-async def get_prompt_content(filename: str):
-    """
-    获取指定 prompt 文件的内容。
-    """
-    if "/" in filename or ".." in filename:
-        raise HTTPException(status_code=400, detail="无效的文件名。")
-    
-    filepath = os.path.join(PROMPTS_DIR, filename)
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Prompt 文件未找到。")
-    
-    async with aiofiles.open(filepath, 'r', encoding='utf-8') as f:
-        content = await f.read()
-    return {"filename": filename, "content": content}
-
-
-@app.put("/api/prompts/{filename}")
-async def update_prompt_content(filename: str, prompt_update: PromptUpdate):
-    """
-    更新指定 prompt 文件的内容。
-    """
-    if "/" in filename or ".." in filename:
-        raise HTTPException(status_code=400, detail="无效的文件名。")
-
-    filepath = os.path.join(PROMPTS_DIR, filename)
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Prompt 文件未找到。")
-
-    try:
-        async with aiofiles.open(filepath, 'w', encoding='utf-8') as f:
-            await f.write(prompt_update.content)
-        return {"message": f"Prompt 文件 '{filename}' 更新成功。"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"写入 Prompt 文件时出错: {e}")
 
 
 @app.on_event("shutdown")

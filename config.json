@@ -6,9 +6,7 @@
     "max_pages": 3,
     "personal_only": true,
     "min_price": "3000",
-    "max_price": "5000",
-    "ai_prompt_base_file": "prompts/base_prompt.txt",
-    "ai_prompt_criteria_file": "prompts/macbook_criteria.txt"
+    "max_price": "5000"
   },
   {
     "task_name": "DJI Mini 3 Pro",
@@ -16,8 +14,6 @@
     "keyword": "mini 3 pro",
     "max_pages": 3,
     "personal_only": true,
-    "ai_prompt_base_file": "prompts/base_prompt.txt",
-    "ai_prompt_criteria_file": "prompts/dji_mini3_criteria.txt",
     "min_price": "3500",
     "max_price": "4500"
   },
@@ -28,8 +24,6 @@
     "max_pages": 3,
     "personal_only": true,
     "min_price": "500",
-    "max_price": "1000",
-    "ai_prompt_base_file": "prompts/base_prompt.txt",
-    "ai_prompt_criteria_file": "prompts/babycare_婴儿车_criteria.txt"
+    "max_price": "1000"
   }
 ]

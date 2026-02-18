@@ -21,10 +21,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 </div>
                 <div class="results-filter-bar">
                     <select id="result-file-selector"><option>加载中...</option></select>
-                    <label>
-                        <input type="checkbox" id="recommended-only-checkbox">
-                        仅看AI推荐
-                    </label>
                     <button id="refresh-results-btn" class="control-button">🔄 刷新</button>
                 </div>
                 <div id="results-grid-container">
@@ -46,67 +42,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     <h3>系统状态检查</h3>
                     <div id="system-status-container"><p>正在加载状态...</p></div>
                 </div>
-                <div class="settings-card">
-                    <h3>Prompt 管理</h3>
-                    <div class="prompt-manager">
-                        <div class="prompt-list-container">
-                            <label for="prompt-selector">选择要编辑的 Prompt:</label>
-                            <select id="prompt-selector"><option>加载中...</option></select>
-                        </div>
-                        <div class="prompt-editor-container">
-                            <textarea id="prompt-editor" spellcheck="false" disabled placeholder="请先从上方选择一个 Prompt 文件进行编辑..."></textarea>
-                            <button id="save-prompt-btn" class="control-button primary-btn" disabled>保存更改</button>
-                        </div>
-                    </div>
-                </div>
             </section>`
     };
 
-    // --- API Functions ---
-    async function fetchPrompts() {
+    async function createTask(data) {
         try {
-            const response = await fetch('/api/prompts');
-            if (!response.ok) throw new Error('无法获取Prompt列表');
-            return await response.json();
-        } catch (error) {
-            console.error(error);
-            return [];
-        }
-    }
-
-    async function fetchPromptContent(filename) {
-        try {
-            const response = await fetch(`/api/prompts/${filename}`);
-            if (!response.ok) throw new Error(`无法获取Prompt文件 ${filename} 的内容`);
-            return await response.json();
-        } catch (error) {
-            console.error(error);
-            return null;
-        }
-    }
-
-    async function updatePrompt(filename, content) {
-        try {
-            const response = await fetch(`/api/prompts/${filename}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: content }),
-            });
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || '更新Prompt失败');
-            }
-            return await response.json();
-        } catch (error) {
-            console.error(`无法更新Prompt ${filename}:`, error);
-            alert(`错误: ${error.message}`);
-            return null;
-        }
-    }
-
-    async function createTaskWithAI(data) {
-        try {
-            const response = await fetch(`/api/tasks/generate`, {
+            const response = await fetch(`/api/tasks`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -115,12 +56,12 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             if (!response.ok) {
                 const errorData = await response.json();
-                throw new Error(errorData.detail || '通过AI创建任务失败');
+                throw new Error(errorData.detail || '创建任务失败');
             }
-            console.log(`AI任务创建成功!`);
+            console.log(`任务创建成功!`);
             return await response.json();
         } catch (error) {
-            console.error(`无法通过AI创建任务:`, error);
+            console.error(`无法创建任务:`, error);
             alert(`错误: ${error.message}`);
             return null;
         }
@@ -191,12 +132,11 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
-    async function fetchResultContent(filename, recommendedOnly) {
+    async function fetchResultContent(filename) {
         try {
             const params = new URLSearchParams({
                 page: 1,
                 limit: 100, // Fetch a decent number of items
-                recommended_only: recommendedOnly
             });
             const response = await fetch(`/api/results/${filename}?${params}`);
             if (!response.ok) throw new Error(`无法获取文件 ${filename} 的内容`);
@@ -237,8 +177,8 @@ document.addEventListener('DOMContentLoaded', function() {
     function renderSystemStatus(status) {
         if (!status) return '<p>无法加载系统状态。</p>';
 
-        const renderStatusTag = (isOk) => isOk 
-            ? `<span class="tag status-ok">正常</span>` 
+        const renderStatusTag = (isOk) => isOk
+            ? `<span class="tag status-ok">正常</span>`
             : `<span class="tag status-error">异常</span>`;
 
         const env = status.env_file || {};
@@ -253,22 +193,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     <span class="label">环境变量文件 (.env)</span>
                     <span class="value">${renderStatusTag(env.exists)}</span>
                 </li>
-                <li class="status-item">
-                    <span class="label">OpenAI API Key</span>
-                    <span class="value">${renderStatusTag(env.openai_api_key_set)}</span>
-                </li>
-                <li class="status-item">
-                    <span class="label">OpenAI Base URL</span>
-                    <span class="value">${renderStatusTag(env.openai_base_url_set)}</span>
-                </li>
-                <li class="status-item">
-                    <span class="label">OpenAI Model Name</span>
-                    <span class="value">${renderStatusTag(env.openai_model_name_set)}</span>
-                </li>
-                <li class="status-item">
-                    <span class="label">Ntfy Topic URL</span>
-                    <span class="value">${renderStatusTag(env.ntfy_topic_url_set)}</span>
-                </li>
             </ul>
         `;
     }
@@ -281,11 +205,6 @@ document.addEventListener('DOMContentLoaded', function() {
         const cards = data.items.map(item => {
             const info = item.商品信息 || {};
             const seller = item.卖家信息 || {};
-            const ai = item.ai_analysis || {};
-
-            const isRecommended = ai.is_recommended === true;
-            const recommendationClass = isRecommended ? 'recommended' : 'not-recommended';
-            const recommendationText = isRecommended ? '推荐' : (ai.is_recommended === false ? '不推荐' : '待定');
             
             const imageUrl = (info.商品图片列表 && info.商品图片列表[0]) ? info.商品图片列表[0] : 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
@@ -297,10 +216,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 <div class="card-content">
                     <h3 class="card-title"><a href="${info.商品链接 || '#'}" target="_blank" title="${info.商品标题 || ''}">${info.商品标题 || '无标题'}</a></h3>
                     <p class="card-price">${info.当前售价 || '价格未知'}</p>
-                    <div class="card-ai-summary ${recommendationClass}">
-                        <strong>AI建议: ${recommendationText}</strong>
-                        <p title="${ai.reason || ''}">原因: ${ai.reason || '无分析'}</p>
-                    </div>
                     <div class="card-footer">
                         <span class="seller-info">卖家: ${info.卖家昵称 || seller.卖家昵称 || '未知'}</span>
                         <span>
@@ -328,7 +243,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     <th>关键词</th>
                     <th>价格范围</th>
                     <th>筛选条件</th>
-                    <th>AI 标准</th>
                     <th>操作</th>
                 </tr>
             </thead>`;
@@ -345,7 +259,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 <td><span class="tag">${task.keyword}</span></td>
                 <td>${task.min_price || '不限'} - ${task.max_price || '不限'}</td>
                 <td>${task.personal_only ? '<span class="tag personal">个人闲置</span>' : ''}</td>
-                <td>${(task.ai_prompt_criteria_file || 'N/A').replace('prompts/', '')}</td>
                 <td>
                     <button class="action-btn edit-btn">编辑</button>
                     <button class="action-btn delete-btn">删除</button>
@@ -399,13 +312,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
     async function fetchAndRenderResults() {
         const selector = document.getElementById('result-file-selector');
-        const checkbox = document.getElementById('recommended-only-checkbox');
         const container = document.getElementById('results-grid-container');
 
-        if (!selector || !checkbox || !container) return;
+        if (!selector || !container) return;
 
         const selectedFile = selector.value;
-        const recommendedOnly = checkbox.checked;
 
         if (!selectedFile) {
             container.innerHTML = '<p>请先选择一个结果文件。</p>';
@@ -413,20 +324,18 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         container.innerHTML = '<p>正在加载结果...</p>';
-        const data = await fetchResultContent(selectedFile, recommendedOnly);
+        const data = await fetchResultContent(selectedFile);
         container.innerHTML = renderResultsGrid(data);
     }
 
     async function initializeResultsView() {
         const selector = document.getElementById('result-file-selector');
-        const checkbox = document.getElementById('recommended-only-checkbox');
         const refreshBtn = document.getElementById('refresh-results-btn');
 
         const fileData = await fetchResultFiles();
         if (fileData && fileData.files && fileData.files.length > 0) {
             selector.innerHTML = fileData.files.map(f => `<option value="${f}">${f}</option>`).join('');
             selector.addEventListener('change', fetchAndRenderResults);
-            checkbox.addEventListener('change', fetchAndRenderResults);
             refreshBtn.addEventListener('click', fetchAndRenderResults);
             // Initial load
             await fetchAndRenderResults();
@@ -441,60 +350,6 @@ document.addEventListener('DOMContentLoaded', function() {
         const statusContainer = document.getElementById('system-status-container');
         const status = await fetchSystemStatus();
         statusContainer.innerHTML = renderSystemStatus(status);
-
-        // 2. Setup Prompt Editor
-        const promptSelector = document.getElementById('prompt-selector');
-        const promptEditor = document.getElementById('prompt-editor');
-        const savePromptBtn = document.getElementById('save-prompt-btn');
-
-        const prompts = await fetchPrompts();
-        if (prompts && prompts.length > 0) {
-            promptSelector.innerHTML = '<option value="">-- 请选择 --</option>' + prompts.map(p => `<option value="${p}">${p}</option>`).join('');
-        } else {
-            promptSelector.innerHTML = '<option value="">没有找到Prompt文件</option>';
-        }
-
-        promptSelector.addEventListener('change', async () => {
-            const selectedFile = promptSelector.value;
-            if (selectedFile) {
-                promptEditor.value = "正在加载...";
-                promptEditor.disabled = true;
-                savePromptBtn.disabled = true;
-                const data = await fetchPromptContent(selectedFile);
-                if (data) {
-                    promptEditor.value = data.content;
-                    promptEditor.disabled = false;
-                    savePromptBtn.disabled = false;
-                } else {
-                    promptEditor.value = `加载文件 ${selectedFile} 失败。`;
-                }
-            } else {
-                promptEditor.value = "请先从上方选择一个 Prompt 文件进行编辑...";
-                promptEditor.disabled = true;
-                savePromptBtn.disabled = true;
-            }
-        });
-
-        savePromptBtn.addEventListener('click', async () => {
-            const selectedFile = promptSelector.value;
-            const content = promptEditor.value;
-            if (!selectedFile) {
-                alert("请先选择一个要保存的Prompt文件。");
-                return;
-            }
-
-            savePromptBtn.disabled = true;
-            savePromptBtn.textContent = '保存中...';
-
-            const result = await updatePrompt(selectedFile, content);
-            if (result) {
-                alert(result.message || "保存成功！");
-            }
-            // No need to show alert on failure, as updatePrompt already does.
-            
-            savePromptBtn.disabled = false;
-            savePromptBtn.textContent = '保存更改';
-        });
     }
 
     // Handle navigation clicks
@@ -553,7 +408,6 @@ document.addEventListener('DOMContentLoaded', function() {
                         <input type="checkbox" ${taskData.personal_only ? 'checked' : ''} data-field="personal_only"> 个人闲置
                     </label>
                 </td>
-                <td>${(taskData.ai_prompt_criteria_file || 'N/A').replace('prompts/', '')}</td>
                 <td>
                     <button class="action-btn save-btn">保存</button>
                     <button class="action-btn cancel-btn">取消</button>
@@ -661,10 +515,11 @@ document.addEventListener('DOMContentLoaded', function() {
             const data = {
                 task_name: formData.get('task_name'),
                 keyword: formData.get('keyword'),
-                description: formData.get('description'),
                 min_price: formData.get('min_price') || null,
                 max_price: formData.get('max_price') || null,
                 personal_only: formData.get('personal_only') === 'on',
+                max_pages: 3,
+                enabled: true,
             };
 
             // Show loading state
@@ -674,7 +529,7 @@ document.addEventListener('DOMContentLoaded', function() {
             spinner.style.display = 'inline-block';
             saveBtn.disabled = true;
 
-            const result = await createTaskWithAI(data);
+            const result = await createTask(data);
 
             // Hide loading state
             btnText.style.display = 'inline-block';
